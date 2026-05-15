@@ -1,5 +1,6 @@
 generator client {
   provider = "prisma-client-js"
+  output   = "../generated/prisma"
 }
 
 datasource db {
@@ -15,4 +16,6 @@ model Announcement {
   category    String
   contactInfo String
   createdAt   DateTime @default(now())
+
+  @@map("announcements")
 }
