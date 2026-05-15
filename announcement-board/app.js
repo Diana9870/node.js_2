@@ -4,59 +4,118 @@ import { PrismaClient } from '@prisma/client';
 const app = express();
 const prisma = new PrismaClient();
 
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
+const PER_PAGE = 10;
 
 app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
 app.use(express.static('public'));
 
 app.set('view engine', 'ejs');
 
+const categoryMap = {
+  sale: '📦 Продаж',
+  service: '🔧 Послуги',
+  job: '💼 Робота',
+  other: '📌 Інше',
+};
+
+function validateAnnouncement(data) {
+  const errors = {};
+
+  const {
+    title,
+    description,
+    price,
+    category,
+    contactInfo,
+  } = data;
+
+  const validCategories = ['sale', 'service', 'job', 'other'];
+
+  if (!title || title.trim().length < 5) {
+    errors.title = 'Назва має бути не менше 5 символів';
+  }
+
+  if (title && title.trim().length > 100) {
+    errors.title = 'Назва має бути не більше 100 символів';
+  }
+
+  if (!description || description.trim().length < 10) {
+    errors.description = 'Опис має бути не менше 10 символів';
+  }
+
+  if (!validCategories.includes(category)) {
+    errors.category = 'Оберіть категорію';
+  }
+
+  if (!price || isNaN(price) || Number(price) <= 0) {
+    errors.price = 'Ціна має бути додатним числом';
+  }
+
+  if (!contactInfo || contactInfo.trim().length < 5) {
+    errors.contactInfo =
+      'Контактна інформація має бути не менше 5 символів';
+  }
+
+  return errors;
+}
+
 app.get('/', async (req, res, next) => {
   try {
-    const { search = '', sort = 'newest', page = 1 } = req.query;
+    const {
+      search = '',
+      sort = 'newest',
+      page = '1',
+    } = req.query;
 
-    const pageNum = Number(page);
-    const perPage = 10;
+    const currentPage = Math.max(Number(page) || 1, 1);
 
     const where = {};
 
     if (search.trim()) {
       where.title = {
-        contains: search
+        contains: search.trim(),
+        mode: 'insensitive',
       };
     }
 
     let orderBy = {
-      createdAt: 'desc'
+      createdAt: 'desc',
     };
 
     if (sort === 'oldest') {
       orderBy = {
-        createdAt: 'asc'
+        createdAt: 'asc',
       };
     }
 
-    const total = await prisma.announcement.count({
-      where
-    });
+    const skip = (currentPage - 1) * PER_PAGE;
 
-    const totalPages = Math.ceil(total / perPage);
+    const [announcements, total] = await Promise.all([
+      prisma.announcement.findMany({
+        where,
+        orderBy,
+        skip,
+        take: PER_PAGE,
+      }),
 
-    const announcements = await prisma.announcement.findMany({
-      where,
-      orderBy,
-      skip: (pageNum - 1) * perPage,
-      take: perPage
-    });
+      prisma.announcement.count({
+        where,
+      }),
+    ]);
+
+    const totalPages = Math.ceil(total / PER_PAGE);
 
     res.render('index', {
       announcements,
       search,
       sort,
-      currentPage: pageNum,
-      totalPages
+      currentPage,
+      totalPages,
+      total,
+      categoryMap,
     });
-
   } catch (error) {
     next(error);
   }
@@ -65,61 +124,26 @@ app.get('/', async (req, res, next) => {
 app.get('/announcements', (req, res) => {
   res.render('new', {
     errors: {},
-    data: {}
+    data: {},
   });
 });
 
-app.get('/announcements/:id', async (req, res, next) => {
-  const id = Number(req.params.id);
-
-  const announcement = await prisma.announcement.findUnique({
-    where: { id }
-  });
-
-  if (!announcement) {
-    return res.status(404).render('404');
-  }
-
-  res.render('announcement', { announcement });
-
+app.post('/announcements', async (req, res, next) => {
   try {
-
     const {
       title,
       description,
       price,
       category,
-      contactInfo
+      contactInfo,
     } = req.body;
 
-    const errors = {};
-
-    if (!title || title.trim().length < 5) {
-      errors.title = 'Назва має бути не менше 5 символів';
-    }
-
-    if (!description || description.trim().length < 10) {
-      errors.description = 'Опис має бути не менше 10 символів';
-    }
-
-    const validCategories = ['sale', 'service', 'job', 'other'];
-
-    if (!validCategories.includes(category)) {
-      errors.category = 'Оберіть категорію';
-    }
-
-    if (!price || isNaN(price) || Number(price) <= 0) {
-      errors.price = 'Ціна має бути додатним числом';
-    }
-
-    if (!contactInfo || contactInfo.trim().length < 5) {
-      errors.contactInfo = 'Контакти мають бути не менше 5 символів';
-    }
+    const errors = validateAnnouncement(req.body);
 
     if (Object.keys(errors).length > 0) {
-      return res.render('new', {
+      return res.status(400).render('new', {
         errors,
-        data: req.body
+        data: req.body,
       });
     }
 
@@ -129,12 +153,11 @@ app.get('/announcements/:id', async (req, res, next) => {
         description: description.trim(),
         price: Number(price),
         category,
-        contactInfo: contactInfo.trim()
-      }
+        contactInfo: contactInfo.trim(),
+      },
     });
 
     res.redirect(`/announcements/${announcement.id}`);
-
   } catch (error) {
     next(error);
   }
@@ -142,23 +165,28 @@ app.get('/announcements/:id', async (req, res, next) => {
 
 app.get('/announcements/:id', async (req, res, next) => {
   try {
-
     const id = Number(req.params.id);
 
+    if (isNaN(id)) {
+      return res.status(404).render('404', {
+        message: 'Оголошення не знайдено',
+      });
+    }
+
     const announcement = await prisma.announcement.findUnique({
-      where: { id }
+      where: { id },
     });
 
     if (!announcement) {
       return res.status(404).render('404', {
-        message: 'Оголошення не знайдено'
+        message: 'Оголошення не знайдено',
       });
     }
 
     res.render('announcement', {
-      announcement
+      announcement,
+      categoryMap,
     });
-
   } catch (error) {
     next(error);
   }
@@ -166,15 +194,17 @@ app.get('/announcements/:id', async (req, res, next) => {
 
 app.delete('/announcements/:id', async (req, res, next) => {
   try {
-
     const id = Number(req.params.id);
 
+    if (isNaN(id)) {
+      return res.status(404).end();
+    }
+
     await prisma.announcement.delete({
-      where: { id }
+      where: { id },
     });
 
     res.status(204).end();
-
   } catch (error) {
     next(error);
   }
@@ -182,16 +212,30 @@ app.delete('/announcements/:id', async (req, res, next) => {
 
 app.use((req, res) => {
   res.status(404).render('404', {
-    message: 'Сторінку не знайдено'
+    message: 'Сторінку не знайдено',
   });
 });
 
 app.use((err, req, res, next) => {
   console.error(err);
 
-  res.status(500).render('error');
+  res.status(500).render('error', {
+    error: process.env.NODE_ENV === 'development'
+      ? err
+      : null,
+  });
+});
+
+process.on('SIGINT', async () => {
+  await prisma.$disconnect();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  await prisma.$disconnect();
+  process.exit(0);
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`🚀 Server running on http://localhost:${PORT}`);
 });
